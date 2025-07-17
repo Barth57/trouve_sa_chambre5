@@ -1,0 +1,149 @@
+-- Tables pour Trouvé sa chambre avec Supabase
+-- Exécuter ces requêtes dans l'éditeur SQL de Supabase
+
+-- Table des cités universitaires
+CREATE TABLE cites (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  nom VARCHAR NOT NULL,
+  ville VARCHAR NOT NULL,
+  adresse TEXT NOT NULL,
+  description TEXT,
+  latitude FLOAT,
+  longitude FLOAT,
+  equipements TEXT[], -- Array de strings pour les équipements
+  transport TEXT[], -- Array de strings pour les transports
+  photos TEXT[], -- Array d'URLs de photos
+  note_globale FLOAT DEFAULT 0,
+  nombre_avis INTEGER DEFAULT 0,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- Table des chambres
+CREATE TABLE chambres (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  cite_id UUID REFERENCES cites(id) ON DELETE CASCADE,
+  titre VARCHAR NOT NULL,
+  description TEXT NOT NULL,
+  prix INTEGER NOT NULL, -- Prix en FCFA
+  superficie INTEGER NOT NULL,
+  type VARCHAR NOT NULL CHECK (type IN ('studio', 'T1', 'T2', 'chambre_partagee')),
+  equipements TEXT[], -- Array de strings
+  disponible BOOLEAN DEFAULT true,
+  charges_incluses BOOLEAN DEFAULT false,
+  caution INTEGER DEFAULT 0,
+  photos TEXT[], -- Array d'URLs de photos
+  note FLOAT DEFAULT 0,
+  nombre_avis INTEGER DEFAULT 0,
+  date_disponibilite DATE DEFAULT CURRENT_DATE,
+  
+  -- Contact
+  contact_nom VARCHAR NOT NULL,
+  contact_email VARCHAR NOT NULL,
+  contact_telephone VARCHAR NOT NULL,
+  
+  -- Caractéristiques
+  etage INTEGER DEFAULT 1,
+  ascenseur BOOLEAN DEFAULT false,
+  balcon BOOLEAN DEFAULT false,
+  vue VARCHAR,
+  orientation VARCHAR,
+  meuble BOOLEAN DEFAULT false,
+  
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- Table des avis (pour plus tard)
+CREATE TABLE avis (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  chambre_id UUID REFERENCES chambres(id) ON DELETE CASCADE,
+  auteur_nom VARCHAR NOT NULL,
+  auteur_email VARCHAR,
+  note INTEGER NOT NULL CHECK (note >= 1 AND note <= 5),
+  commentaire TEXT,
+  date_sejour DATE,
+  verified BOOLEAN DEFAULT false,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- Index pour optimiser les performances
+CREATE INDEX idx_chambres_cite_id ON chambres(cite_id);
+CREATE INDEX idx_chambres_disponible ON chambres(disponible);
+CREATE INDEX idx_chambres_prix ON chambres(prix);
+CREATE INDEX idx_cites_ville ON cites(ville);
+CREATE INDEX idx_avis_chambre_id ON avis(chambre_id);
+
+-- RLS (Row Level Security) pour la sécurité
+ALTER TABLE cites ENABLE ROW LEVEL SECURITY;
+ALTER TABLE chambres ENABLE ROW LEVEL SECURITY;
+ALTER TABLE avis ENABLE ROW LEVEL SECURITY;
+
+-- Politiques de sécurité (lecture publique, écriture authentifiée pour l'admin)
+-- Pour l'instant, accès public en lecture pour tous
+CREATE POLICY "Permettre lecture publique des cités" ON cites
+  FOR SELECT TO public USING (true);
+
+CREATE POLICY "Permettre lecture publique des chambres" ON chambres
+  FOR SELECT TO public USING (true);
+
+CREATE POLICY "Permettre lecture publique des avis" ON avis
+  FOR SELECT TO public USING (true);
+
+-- Pour les opérations d'écriture, on pourra ajouter une authentification plus tard
+-- En attendant, accès public pour le développement (à sécuriser en production)
+CREATE POLICY "Permettre insertion publique des cités" ON cites
+  FOR INSERT TO public WITH CHECK (true);
+
+CREATE POLICY "Permettre mise à jour publique des cités" ON cites
+  FOR UPDATE TO public USING (true);
+
+CREATE POLICY "Permettre suppression publique des cités" ON cites
+  FOR DELETE TO public USING (true);
+
+CREATE POLICY "Permettre insertion publique des chambres" ON chambres
+  FOR INSERT TO public WITH CHECK (true);
+
+CREATE POLICY "Permettre mise à jour publique des chambres" ON chambres
+  FOR UPDATE TO public USING (true);
+
+CREATE POLICY "Permettre suppression publique des chambres" ON chambres
+  FOR DELETE TO public USING (true);
+
+CREATE POLICY "Permettre insertion publique des avis" ON avis
+  FOR INSERT TO public WITH CHECK (true);
+
+-- Fonctions pour mettre à jour automatiquement updated_at
+CREATE OR REPLACE FUNCTION update_updated_at_column()
+RETURNS TRIGGER AS $$
+BEGIN
+  NEW.updated_at = NOW();
+  RETURN NEW;
+END;
+$$ language 'plpgsql';
+
+-- Triggers pour updated_at
+CREATE TRIGGER update_cites_updated_at BEFORE UPDATE ON cites
+  FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER update_chambres_updated_at BEFORE UPDATE ON chambres
+  FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+-- Fonction pour calculer automatiquement les notes moyennes
+CREATE OR REPLACE FUNCTION calculate_chambre_note()
+RETURNS TRIGGER AS $$
+BEGIN
+  UPDATE chambres 
+  SET 
+    note = (SELECT COALESCE(AVG(note), 0) FROM avis WHERE chambre_id = NEW.chambre_id),
+    nombre_avis = (SELECT COUNT(*) FROM avis WHERE chambre_id = NEW.chambre_id)
+  WHERE id = NEW.chambre_id;
+  
+  RETURN NEW;
+END;
+$$ language 'plpgsql';
+
+-- Trigger pour recalculer automatiquement les notes
+CREATE TRIGGER update_chambre_note_on_avis_change 
+  AFTER INSERT OR UPDATE OR DELETE ON avis
+  FOR EACH ROW EXECUTE FUNCTION calculate_chambre_note();
